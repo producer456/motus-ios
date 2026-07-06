@@ -77,7 +77,7 @@ struct PanelView: View {
 
             // ---- Track buttons ----
             ForEach(0..<4, id: \.self) { index in
-                TrackButton(index: index, size: CGSize(width: 11 * s, height: 46 * s))
+                TrackButton(index: index, size: CGSize(width: 17 * s, height: 46 * s))
                     .position(x: 148 * s, y: (128 + CGFloat(index) * 62) * s)
             }
 
