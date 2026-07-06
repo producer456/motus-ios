@@ -197,6 +197,36 @@ final class AudioEngine {
         }
         renderEvents.removeAll(keepingCapacity: true) // uniquely owned here
 
+        // Nudged notes (fractional step offsets) fire on a per-block scan:
+        // early by at most one buffer (~3 ms), which beats per-frame scans.
+        if playing {
+            let framesPerStepLocal = Self.sampleRate * 60 / max(20, song.tempo) / 4
+            let windowStart = stepPos
+            let windowEnd = stepPos + Double(frameCount) / framesPerStepLocal
+            for (trackIndex, track) in song.tracks.enumerated() where !track.muted {
+                guard track.clips.indices.contains(song.selectedScene) else { continue }
+                let clip = track.clips[song.selectedScene]
+                let steps = Double(clip.steps)
+                for note in clip.notes where note.off != 0 {
+                    if track.kind == .drum && track.mutedCells.contains(note.key) { continue }
+                    let start = Double(note.step) + note.off
+                    // Does start (mod loop) fall inside this block's window?
+                    let base = (windowStart / steps).rounded(.down) * steps
+                    for wrap in [base, base + steps] {
+                        let absolute = wrap + start
+                        if absolute > windowStart && absolute <= windowEnd {
+                            let started = trigger(
+                                LiveEvent(track: trackIndex, kind: track.kind, key: note.key,
+                                          velocity: note.velocity, on: true),
+                                song: song, kits: kits, cutoff: cutoff, res: res,
+                                attack: attack, release: release)
+                            started?.autoOffFrames = Int(note.lengthSteps * framesPerStepLocal)
+                        }
+                    }
+                }
+            }
+        }
+
         let framesPerStep = Self.sampleRate * 60 / max(20, song.tempo) / 4
         let stepInc = 1.0 / framesPerStep
         var wetL: Float = 0, wetR: Float = 0
@@ -299,7 +329,7 @@ final class AudioEngine {
             let clip = track.clips[song.selectedScene]
             guard !clip.notes.isEmpty else { continue }
             let localStep = absStep % clip.steps
-            for note in clip.notes where note.step == localStep {
+            for note in clip.notes where note.step == localStep && note.off == 0 {
                 if track.kind == .drum && track.mutedCells.contains(note.key) { continue }
                 let started = trigger(LiveEvent(track: trackIndex, kind: track.kind, key: note.key,
                                                 velocity: note.velocity, on: true),

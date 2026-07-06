@@ -325,38 +325,60 @@ final class Brain: ObservableObject {
         case .setOverview:
             break
         case .note:
+            // Loop Mode (manual 12.1): steps are bars; press sets the length.
+            if menu == .loopLength {
+                guard index < 8 else { return }
+                let bars = track.clips[song.selectedScene].bars
+                if index + 1 != bars {
+                    edit { song in
+                        var c = song.tracks[song.selectedTrack].clips[song.selectedScene]
+                        c.bars = index + 1
+                        let limit = c.steps
+                        c.notes.removeAll { $0.step >= limit }
+                        song.tracks[song.selectedTrack].clips[song.selectedScene] = c
+                    }
+                }
+                barPage = min(barPage, index)
+                showOverlay("LOOP LENGTH", Double(index + 1) / 8, "\(index + 1) BAR\(index > 0 ? "S" : "")")
+                return
+            }
             let clip = track.clips[song.selectedScene]
             let step = barPage * 16 + index
-            guard step < clip.steps else { return }
-            if track.kind == .drum {
-                // Drums: pressing a pad selects the cell, so a plain step
-                // toggle IS the manual's pad-then-step flow for drums.
-                let key = track.selectedPad
+            // Adding notes to the empty extra bar extends the loop (12.1).
+            let extendsBar = step >= clip.steps && barPage >= clip.bars && clip.bars < 8
+            guard step < clip.steps || extendsBar else { return }
+            heldSteps.insert(index)
+            if deleteHeld {
+                stepEntryUsed.insert(index)
+                guard step < clip.steps else { return }
+                let drumKey = track.kind == .drum ? track.selectedPad : nil
                 edit { song in
-                    var c = song.tracks[song.selectedTrack].clips[song.selectedScene]
-                    if deleteHeld {
-                        c.notes.removeAll { $0.step == step && $0.key == key }
-                    } else {
-                        c.toggle(step: step, key: key, velocity: fullVelocity ? 127 : 100)
-                    }
-                    song.tracks[song.selectedTrack].clips[song.selectedScene] = c
+                    song.tracks[song.selectedTrack].clips[song.selectedScene]
+                        .notes.removeAll { $0.step == step && (drumKey == nil || $0.key == drumKey) }
                 }
-            } else {
-                // Melodic (manual 9.5): held pads insert their pitches at this
-                // step; a bare press arms the step for step-then-pad entry, and
-                // removal happens on release if nothing was inserted meanwhile.
-                heldSteps.insert(index)
-                if deleteHeld {
+                return
+            }
+            if track.kind == .drum {
+                // Pressing a pad selects the cell, so a plain step press IS
+                // the manual's pad-then-step flow for drums: empty step adds
+                // on press; a lit step clears on brief release (stepReleased),
+                // so holding it to edit velocity/length never deletes it.
+                let key = track.selectedPad
+                if extendsBar || !clip.notes.contains(where: { $0.step == step && $0.key == key }) {
+                    stepEntryUsed.insert(index)
                     edit { song in
-                        song.tracks[song.selectedTrack].clips[song.selectedScene]
-                            .notes.removeAll { $0.step == step }
+                        var c = song.tracks[song.selectedTrack].clips[song.selectedScene]
+                        if extendsBar { c.bars = barPage + 1 }
+                        c.notes.append(Note(step: step, key: key,
+                                            velocity: fullVelocity ? 127 : 100))
+                        song.tracks[song.selectedTrack].clips[song.selectedScene] = c
                     }
-                    stepEntryUsed.insert(index)
-                } else if !heldPads.isEmpty {
-                    insertNotes(Array(heldPads.values), atSteps: [step],
-                                velocity: fullVelocity ? 127 : 100)
-                    stepEntryUsed.insert(index)
                 }
+            } else if !heldPads.isEmpty {
+                // Melodic pad-then-step (manual 9.5).
+                insertNotes(Array(heldPads.values), atSteps: [step],
+                            velocity: fullVelocity ? 127 : 100, extendTo: extendsBar ? barPage + 1 : nil)
+                stepEntryUsed.insert(index)
             }
         }
     }
@@ -366,24 +388,31 @@ final class Brain: ObservableObject {
     private func stepReleased(_ index: Int) {
         guard heldSteps.remove(index) != nil else { return }
         let used = stepEntryUsed.remove(index) != nil
-        guard !used, mode == .note, track.kind == .synth else { return }
+        guard !used, mode == .note else { return }
         let step = barPage * 16 + index
-        guard track.clips[song.selectedScene].notes.contains(where: { $0.step == step }) else { return }
+        let drumKey = track.kind == .drum ? track.selectedPad : nil
+        guard track.clips[song.selectedScene].notes.contains(where: {
+            $0.step == step && (drumKey == nil || $0.key == drumKey)
+        }) else { return }
         edit { song in
             song.tracks[song.selectedTrack].clips[song.selectedScene]
-                .notes.removeAll { $0.step == step }
+                .notes.removeAll { $0.step == step && (drumKey == nil || $0.key == drumKey) }
         }
     }
 
     /// Insert pitches at steps in one undo unit; starts the transport when a
-    /// first note lands in an empty clip (manual 9.5).
-    private func insertNotes(_ keys: [Int], atSteps steps: [Int], velocity: Int) {
+    /// first note lands in an empty clip (manual 9.5). extendTo grows the
+    /// loop first (adding notes to the empty extra bar keeps it, 12.1).
+    private func insertNotes(_ keys: [Int], atSteps steps: [Int], velocity: Int,
+                             extendTo newBars: Int? = nil) {
         let clip = track.clips[song.selectedScene]
         let wasEmpty = clip.isEmpty
-        let valid = steps.filter { $0 < clip.steps }
+        let limit = (newBars ?? clip.bars) * 16
+        let valid = steps.filter { $0 < limit }
         guard !valid.isEmpty else { return }
         edit { song in
             var c = song.tracks[song.selectedTrack].clips[song.selectedScene]
+            if let newBars, newBars > c.bars { c.bars = newBars }
             for step in valid {
                 for key in keys where !c.notes.contains(where: { $0.step == step && $0.key == key }) {
                     c.notes.append(Note(step: step, key: key, velocity: velocity))
@@ -549,23 +578,118 @@ final class Brain: ObservableObject {
     }
 
     private func leftRight(_ direction: Int) {
-        if shiftHeld {
-            // Page through bars of the clip on the step row.
-            let pages = max(1, track.clips[song.selectedScene].bars)
-            barPage = min(pages - 1, max(0, barPage + direction))
-            refresh()
-        } else {
-            if menu == .browser { cancelBrowserPreview(); menu = .none }
-            clearEntryState()
-            adjust { $0.selectedTrack = min(3, max(0, $0.selectedTrack + direction)) }
-            barPage = 0
+        guard mode == .note else { return }
+        // Step-hold + arrows = nudge notes by 10% of a step (Shift: 1%).
+        if !heldSteps.isEmpty {
+            nudgeHeldSteps(by: Double(direction) * (shiftHeld ? 0.01 : 0.1))
+            return
         }
+        // Arrows move between bars (manual 9.5/12.1) — track selection is the
+        // track buttons' job. One page past the end shows an empty bar; it
+        // joins the loop if you add notes to it.
+        let bars = track.clips[song.selectedScene].bars
+        let maxPage = bars < 8 ? bars : bars - 1
+        barPage = min(maxPage, max(0, barPage + direction))
+        showOverlay("BAR \(barPage + 1)", Double(barPage + 1) / 8,
+                    barPage >= bars ? "EMPTY - ADD NOTES TO KEEP" : "OF \(bars)")
     }
 
     private func octave(_ direction: Int) {
+        // Step-hold + plus/minus transposes the held notes by a semitone
+        // (manual 11.2, melodic only).
+        if !heldSteps.isEmpty, track.kind == .synth {
+            let steps = heldAbsSteps()
+            stepEntryUsed.formUnion(heldSteps)
+            edit { song in
+                var c = song.tracks[song.selectedTrack].clips[song.selectedScene]
+                for i in c.notes.indices where steps.contains(c.notes[i].step) {
+                    c.notes[i].key = min(126, max(1, c.notes[i].key + direction))
+                }
+                song.tracks[song.selectedTrack].clips[song.selectedScene] = c
+            }
+            showOverlay("NOTES", 0.5, "TRANSPOSED \(direction > 0 ? "+1" : "-1")")
+            return
+        }
         guard track.kind == .synth else { return }
         adjust { $0.tracks[$0.selectedTrack].octave = min(3, max(-3, $0.tracks[$0.selectedTrack].octave + direction)) }
         showOverlay("OCTAVE", 0.5, track.octave >= 0 ? "+\(track.octave)" : "\(track.octave)")
+    }
+
+    // MARK: - Step-hold editing (manual ch 11)
+
+    /// Absolute step numbers for the currently held step buttons.
+    private func heldAbsSteps() -> Set<Int> {
+        Set(heldSteps.map { barPage * 16 + $0 })
+    }
+
+    /// Notes at the held steps — drum edits are scoped to the selected cell,
+    /// melodic edits cover all notes at the step (matches the LEDs).
+    private func heldStepMatches(_ note: Note, _ steps: Set<Int>) -> Bool {
+        steps.contains(note.step) && (track.kind == .synth || note.key == track.selectedPad)
+    }
+
+    /// Step-hold + Volume encoder (manual 11.1): note velocity.
+    private func adjustHeldVelocity(by delta: Int) {
+        let steps = heldAbsSteps()
+        stepEntryUsed.formUnion(heldSteps)
+        var shown = 100
+        adjust { song in
+            var c = song.tracks[song.selectedTrack].clips[song.selectedScene]
+            for i in c.notes.indices where heldStepMatches(c.notes[i], steps) {
+                c.notes[i].velocity = min(127, max(1, c.notes[i].velocity + delta * 2))
+                shown = c.notes[i].velocity
+            }
+            song.tracks[song.selectedTrack].clips[song.selectedScene] = c
+        }
+        showOverlay("VELOCITY", Double(shown) / 127, "\(shown)")
+    }
+
+    /// Step-hold + wheel (manual 11.3): note length, 10% of a step per click.
+    private func adjustHeldLength(by delta: Int) {
+        let steps = heldAbsSteps()
+        stepEntryUsed.formUnion(heldSteps)
+        var shown = 1.0
+        adjust { song in
+            var c = song.tracks[song.selectedTrack].clips[song.selectedScene]
+            for i in c.notes.indices where heldStepMatches(c.notes[i], steps) {
+                var length = c.notes[i].lengthSteps + Double(delta) * 0.1
+                length = max(0.1, min(Double(c.steps), length))
+                // Manual: cannot extend past the next note with the same key.
+                if delta > 0 {
+                    let next = c.notes
+                        .filter { $0.key == c.notes[i].key && $0.step > c.notes[i].step }
+                        .map(\.step).min()
+                    if let next { length = min(length, Double(next - c.notes[i].step)) }
+                }
+                c.notes[i].lengthSteps = (length * 10).rounded() / 10
+                shown = c.notes[i].lengthSteps
+            }
+            song.tracks[song.selectedTrack].clips[song.selectedScene] = c
+        }
+        showOverlay("NOTE LENGTH", min(1, shown / 4), String(format: "%.1f", shown))
+    }
+
+    /// Step-hold + arrows (manual 11.4): nudge by a fraction of a step.
+    private func nudgeHeldSteps(by amount: Double) {
+        let steps = heldAbsSteps()
+        stepEntryUsed.formUnion(heldSteps)
+        var shownPercent = 0
+        edit { song in
+            var c = song.tracks[song.selectedTrack].clips[song.selectedScene]
+            for i in c.notes.indices where heldStepMatches(c.notes[i], steps) {
+                var position = Double(c.notes[i].step) + c.notes[i].off + amount
+                let total = Double(c.steps)
+                position = (position.truncatingRemainder(dividingBy: total) + total)
+                    .truncatingRemainder(dividingBy: total)
+                let newStep = Int(position)
+                let newOff = ((position - Double(newStep)) * 100).rounded() / 100
+                c.notes[i].step = newStep
+                c.notes[i].offset = newOff == 0 ? nil : newOff
+                shownPercent = Int(newOff * 100)
+            }
+            song.tracks[song.selectedTrack].clips[song.selectedScene] = c
+        }
+        showOverlay("NOTES NUDGED", Double(shownPercent) / 100, "TO \(shownPercent)%")
     }
 
     private func wheelPress() {
@@ -603,6 +727,11 @@ final class Brain: ObservableObject {
     // MARK: - Surface API: wheel / encoders / volume
 
     func wheel(delta: Int) {
+        // Step-hold + wheel = note length (manual 11.3), regardless of menu.
+        if !heldSteps.isEmpty && mode == .note {
+            adjustHeldLength(by: delta)
+            return
+        }
         switch menu {
         case .tempo:
             adjust { $0.tempo = min(240, max(40, $0.tempo + (shiftHeld ? 0.1 : 1) * Double(delta))) }
@@ -703,6 +832,11 @@ final class Brain: ObservableObject {
     }
 
     func volume(delta: Int) {
+        // Step-hold + volume encoder = note velocity (manual 11.1).
+        if !heldSteps.isEmpty && mode == .note {
+            adjustHeldVelocity(by: delta)
+            return
+        }
         mainVolume = min(1, max(0, mainVolume + Double(delta) * 0.02))
         engine.setMainVolume(Float(mainVolume))
         showOverlay("MAIN VOLUME", mainVolume, String(format: "%.0f%%", mainVolume * 100))
@@ -772,7 +906,8 @@ final class Brain: ObservableObject {
 
     private func refresh() {
         // barPage can go stale via scene changes, loop shrink, set load, undo.
-        barPage = min(barPage, max(0, track.clips[song.selectedScene].bars - 1))
+        // Allow one page past the end: the manual's "empty bar" you can fill.
+        barPage = min(barPage, min(track.clips[song.selectedScene].bars, 7))
         refreshScreen()
         refreshLeds()
     }
@@ -876,17 +1011,37 @@ final class Brain: ObservableObject {
 
     private func transportRow(_ s: inout Screen) {
         s.hline(0, 48, 128)
-        s.text(String(format: "%.0f BPM", song.tempo), x: 4, y: 53)
+        s.text(String(format: "%.0f BPM", song.tempo), x: 4, y: 51)
         let clip = track.clips[song.selectedScene]
         if engine.isPlaying {
             let step = Int(engine.currentStep) % clip.steps
-            s.text("\(step / 16 + 1).\(step % 16 / 4 + 1)", x: 76, y: 53)
-            // play triangle
-            for i in 0..<5 { s.fillRect(112 + i, 52 + i, 1, 9 - 2 * i) }
+            s.text("\(step / 16 + 1).\(step % 16 / 4 + 1)", x: 76, y: 51)
+            for i in 0..<5 { s.fillRect(112 + i, 50 + i, 1, 9 - 2 * i) } // play triangle
         } else {
-            s.text("\(clip.bars)BAR", x: 76, y: 53)
-            s.fillRect(112, 53, 7, 7, on: true)
-            s.fillRect(113, 54, 5, 5, on: false)
+            s.text("\(clip.bars)BAR", x: 76, y: 51)
+            s.fillRect(112, 51, 7, 7, on: true)
+            s.fillRect(113, 52, 5, 5, on: false)
+        }
+        // Loop-length lines (manual 12.1): one line per bar across the bottom;
+        // the selected bar is thick, a plus marks the empty extra bar, and a
+        // vertical tick sweeps with the play position.
+        let bars = clip.bars
+        let slots = min(8, bars + (bars < 8 ? 1 : 0))
+        let slotW = 128 / slots
+        for b in 0..<slots {
+            let x = b * slotW + 1
+            if b >= bars {
+                s.text("+", x: x + slotW / 2 - 3, y: 58)
+            } else if b == barPage {
+                s.fillRect(x, 61, slotW - 3, 3)
+            } else {
+                s.fillRect(x, 62, slotW - 3, 1)
+            }
+        }
+        if engine.isPlaying {
+            let position = (engine.currentStep.truncatingRemainder(dividingBy: Double(clip.steps))) / Double(clip.steps)
+            let x = Int(position * Double(bars * slotW))
+            s.fillRect(min(125, x), 59, 2, 5)
         }
     }
 
@@ -1005,6 +1160,21 @@ final class Brain: ObservableObject {
         } else if mode == .session {
             for i in 0..<8 {
                 colors[Self.stepNote(i)] = i == song.selectedScene ? SIMD3(1, 1, 1) : SIMD3(0.1, 0.1, 0.1)
+            }
+        }
+
+        // Loop Mode overrides the step row: steps are bars (manual 12.1) —
+        // white = selected bar, track color = in the loop, dim = outside.
+        if menu == .loopLength && mode == .note {
+            let bars = track.clips[song.selectedScene].bars
+            for i in 0..<16 {
+                if i == barPage {
+                    colors[Self.stepNote(i)] = SIMD3(0.95, 0.95, 0.92)
+                } else if i < bars {
+                    colors[Self.stepNote(i)] = trackColor
+                } else {
+                    colors[Self.stepNote(i)] = SIMD3(0.05, 0.05, 0.05)
+                }
             }
         }
 

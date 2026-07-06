@@ -6,6 +6,11 @@ struct Note: Codable, Equatable {
     var key: Int            // drum cell 0..15 or MIDI note
     var velocity: Int       // 1...127
     var lengthSteps: Double = 1
+    /// Nudge as a fraction of a step (manual 11.4). Optional so sets saved
+    /// before this field existed still decode.
+    var offset: Double?
+
+    var off: Double { offset ?? 0 }
 }
 
 struct Clip: Codable, Equatable {
