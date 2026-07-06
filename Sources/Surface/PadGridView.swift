@@ -73,7 +73,8 @@ final class PadGridUIView: UIView {
             let frame = CGRect(x: CGFloat(col) * (cellW + gap),
                                y: CGFloat(row) * (cellH + gap),
                                width: cellW, height: cellH)
-            let radius = min(cellW, cellH) * 0.18
+            // Photo-matched: the real pads are near-square-cornered (~7%).
+            let radius = min(cellW, cellH) * 0.07
             padLayers[index].frame = frame
             padLayers[index].cornerRadius = radius
             pillowLayers[index].frame = frame
