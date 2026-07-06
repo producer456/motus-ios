@@ -977,6 +977,13 @@ final class Brain: ObservableObject {
             let clip = track.clips[song.selectedScene]
             let editKey = track.kind == .drum ? track.selectedPad : nil
             let playStep = engine.isPlaying ? Int(engine.currentStep) % clip.steps : -1
+            // Steps covered by a note's length glow brighter (manual 11.3).
+            var tailSteps = Set<Int>()
+            for n in clip.notes where n.lengthSteps > 1
+                && (editKey == nil || n.key == editKey) {
+                let last = n.step + Int(n.lengthSteps.rounded(.up)) - 1
+                for s in (n.step + 1)...max(n.step + 1, last) { tailSteps.insert(s % clip.steps) }
+            }
             for i in 0..<16 {
                 let absStep = barPage * 16 + i
                 let note = Self.stepNote(i)
@@ -987,6 +994,8 @@ final class Brain: ObservableObject {
                     colors[note] = SIMD3(0.2, 1.0, 0.3)
                 } else if hasNote {
                     colors[note] = SIMD3(0.95, 0.95, 0.92)
+                } else if tailSteps.contains(absStep) {
+                    colors[note] = SIMD3(0.38, 0.38, 0.36)
                 } else if absStep < clip.steps {
                     colors[note] = trackColor * 0.12
                 } else {

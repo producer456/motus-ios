@@ -86,13 +86,24 @@ struct StepButton: View {
             client.step(index, down: false)
         } content: { pressed in
             ZStack {
-                RoundButton(diameter: diameter,
-                            lit: lit,
-                            color: Color(red: rgb.x, green: rgb.y, blue: rgb.z),
-                            pressed: pressed)
-                Circle()
-                    .fill(lit > 0.02 ? Color.white.opacity(0.9) : Color(white: 0.3))
-                    .frame(width: diameter * 0.12, height: diameter * 0.12)
+                RoundButton(diameter: diameter, lit: 0, pressed: pressed)
+                if lit > 0.02 {
+                    // Hardware look: the whole translucent cap lights solid
+                    // and crisp (white = note assigned, green = playhead,
+                    // dim = empty-in-bar), with a soft outer bloom.
+                    let color = Color(red: 0.15 + 0.85 * rgb.x,
+                                      green: 0.15 + 0.85 * rgb.y,
+                                      blue: 0.15 + 0.85 * rgb.z)
+                    Circle()
+                        .fill(color.opacity(0.30 + 0.70 * lit))
+                        .frame(width: diameter * 0.80, height: diameter * 0.80)
+                        .shadow(color: color.opacity(0.9 * lit), radius: diameter * 0.20)
+                } else {
+                    // Resting cap: tiny dark LED window in the center.
+                    Circle()
+                        .fill(Color(white: 0.30))
+                        .frame(width: diameter * 0.12, height: diameter * 0.12)
+                }
             }
         }
     }
