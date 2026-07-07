@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Faithful top-down Ableton Move panel, laid out proportionally in a
-/// 1000x470 design space (photo-derived) and scaled to fill the screen.
+/// Top-down hardware-style control panel, laid out proportionally in a
+/// 1000x470 design space and scaled to fill the screen. Compatible with
+/// Ableton Move hardware.
 struct PanelView: View {
     @EnvironmentObject var client: Brain
 
